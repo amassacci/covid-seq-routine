@@ -1,0 +1,72 @@
+#------------------------------------------------------------------------------------------------how to run covid-seq survey analysis
+### All scripts are saved in /data/sequence/covid-19/covid-seq (VM immuno)
+
+### required packages
+# datamash
+# bedtools
+# seqkit
+
+## R
+# tidyverse
+# data.table
+
+## python3
+# biopython
+
+
+
+conda activate covid_seq
+
+### 1.
+bash covid_seq_workflow.sh survey_280721		# just the run name is required, not the path folder
+
+### 2.
+# Download DRAGEN RNA Pathogen Detection and COVID LINEAGE reports in csv format from Basespace. Rename them (e.g. dragen_rna_280721.csv, covid_lineage_280721.csv) and move them into the run folder (e.g.survey_280721)
+# Put together metadata from the 4/8 plates and save a single file (e.g metadata_280721.csv)
+
+### 3.
+# join_table_and_gisaid_metadata.R
+
+# outputs are:
+# 	-all_samples_join_*.tsv						merge table with all metrics
+#	-comunicazione_dnlab_seresmi_*.tsv			results for seresmi and DNLAB with lineage reassigned to NA for samples with RBD_min_hotspot < 10 
+#	-sample_date.tsv							association sample name - date
+#	-submission_metadata.csv 					selected samples with high coverage for GISAID submission
+#	-gisaid_keep.txt 							list of the selected samples
+
+
+
+### 4.
+WORKDIR="/data/sequence/covid-19/covid-seq"
+run=survey_280721
+sampleDir="/data/sequence/covid-19/covid-seq/${run}"
+#python3 ${WORKDIR}/rename_header.py ${sampleDir}     # $sampleDir has to contain files sample_date.tsv and all_sequences.fasta
+python3 ${WORKDIR}/rename_header_dragen_rna.py ${sampleDir}
+
+
+seqkit grep -f ${sampleDir}/gisaid_keep.txt ${sampleDir}/all_sequences_header_gisaid_ok.fasta > ${sampleDir}/submission_gisaid.fasta
+
+seqkit grep -f ${sampleDir}/icogen_keep.txt ${sampleDir}/all_sequences_header_icogen_ok.fasta > ${sampleDir}/submission_icogen.fasta
+
+fasta_icogen=$sampleDir/fasta_icogen
+mkdir -p $fasta_icogen
+
+seqkit split --by-id submission_icogen.fasta -O $fasta_icogen
+for file in $fasta_icogen/submission_icogen.id_*.fasta
+do
+  mv "$file" "${file/submission_icogen.id_/}"
+done
+
+### 5.
+# Submit on I-CO-GEN
+
+### 6.
+# Submit on GISAID
+
+### 7.
+# After 48h from submission
+# Download sequences from GISAID
+curl -u matteo.pallocca:XrWF02iI123dDs https://www.epicov.org/epi3/3p/ifoit/export/provision.json.xz | xz -d -T8 > /scratch/amassacci/testing/gisaid.json
+
+# Associate sample code to GISAID code
+python3 ${WORKDIR}/sample_name_to_EPI_code.py ${sampleDir}

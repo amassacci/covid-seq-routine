@@ -1,0 +1,32 @@
+
+
+DRAGEN RNA Pathogen Detection 0708_0710 --> FILES --> 07XXXXXX --> 07XXXXXX_tumor.bam, 07XXXXXX_tumor.bam.bai
+
+
+# RBD coordinates
+NC_045512.2:22517-23185
+
+
+# mutations of interest on RBD
+K417N		B.1.351
+K417T		P.1
+L452R		B.1.617.1,B.1.617.2
+S477N		B.1.160
+T478K		B.1.617.2
+E484K		B.1.351,B.1.525,P.1
+E484Q		B.1.617.1
+N501Y		B.1.1.7,B.1.351,P.1
+
+
+# mutations of interest on RBD and genomics coordinates
+K417N  G22813T
+K417T  A22812C
+L452R  T22917G
+S477N  G22992A
+T478K  C22995A
+E484K  G23012A
+E484Q  G23012C
+N501Y  A23063T
+
+
+

@@ -1,0 +1,1124 @@
+---
+title: "COVID Seq Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(xlsx)
+})
+```
+
+!ATTENZIONE: run_folder,run_name
+```{r, warning = FALSE}
+run_folder <- "/home/alice/ago2023/Desktop/covid-seq/run_070324"
+run_name <- gsub("run_","","run_070324")
+
+month_decode <- data.frame(letter = c("A","B","C","D","E","H","L","M","P","R","S","T"),
+                           month = c("01","02","03","04","05","06","07","08","09","10","11","12")) %>%
+  column_to_rownames("letter")
+```
+
+
+!ATTENZIONE: skip = 1  
+!ATTENZIONE: formato di DATA_PRELIEVO e DATA_DI_NASCITA  
+!ATTENZIONE: aggiunte 2 colonne (TAMPONE:molecolare/rapido, VOLUME: volume necessario per corretta estrazione è 600 microlitri)
+#"X","DATA_PRELIEVO","X1","LABORATORIO","CAMPIONE","ASL","COGNOME","NOME","SESSO","DATA_DI_NASCITA","CODICE_FISCALE","REPARTO_PROVENIENZA","MOTIVO_SEQUENZIAMENTO"
+#"X","DATA_PRELIEVO","CAMPIONE","ASL","LABORATORIO","COGNOME","NOME","SESSO","DATA_DI_NASCITA","CODICE_FISCALE","MOTIVO_SEQUENZIAMENTO","TAMPONE","VOLUME"
+```{r, warning = FALSE}
+read_plate <- function(dir) {
+  files <- list.files(dir, pattern = ".csv", full.names = TRUE)
+  print(files)
+  all_df <- lapply(files, read_csv, skip = 1,
+                   #show_col_types = FALSE,
+                   col_types = cols(),
+                   col_names =
+                     #c("X","DATA_PRELIEVO","DATA_ACCETTAZIONE","LABORATORIO","ASL","COGNOME","NOME","SESSO","DATA_DI_NASCITA","CODICE_FISCALE","MOTIVO_SEQUENZIAMENTO","CAMPIONE")
+                     c("X","DATA_PRELIEVO","DATA_ACCETTAZIONE","LABORATORIO","COGNOME","NOME","SESSO","DATA_DI_NASCITA","CODICE_FISCALE","MOTIVO_SEQUENZIAMENTO","CAMPIONE"))
+  print(head(all_df))
+  
+  metadata <- do.call(rbind,all_df) %>%
+    #mutate(MOTIVO_SEQUENZIAMENTO="PROVA INTERLABORATORIO 2022-11-30") %>%
+    mutate(TAMPONE="",VOLUME="") %>%
+    mutate(ASL = "") %>%
+    #mutate(TAMPONE=ifelse(TAMPONE=="RAPIDO",TAMPONE,"MOLECOLARE"), VOLUME="") %>%
+    select(CAMPIONE,DATA_PRELIEVO,DATA_ACCETTAZIONE,COGNOME,NOME,SESSO,DATA_DI_NASCITA,CODICE_FISCALE,ASL,LABORATORIO,MOTIVO_SEQUENZIAMENTO,TAMPONE,VOLUME) %>%
+    mutate(REPARTO_PROVENIENZA = ASL, .after=LABORATORIO) %>%
+    #mutate(CAMPIONE = gsub("^","23",CAMPIONE)) %>%
+    mutate(CAMPIONE = ifelse(grepl("^\\d",CAMPIONE), gsub("^", "24", CAMPIONE), CAMPIONE)) %>%
+    mutate(DATA_PRELIEVO = as.Date(DATA_PRELIEVO, format="%m/%d/%Y")) %>%
+    mutate(DATA_PRELIEVO = as.character(DATA_PRELIEVO)) %>%
+    mutate(DATA_ACCETTAZIONE = as.Date(DATA_ACCETTAZIONE, format="%d/%m/%Y")) %>%
+    mutate(DATA_ACCETTAZIONE = as.character(DATA_ACCETTAZIONE)) %>%
+    mutate(DATA_DI_NASCITA = as.Date(DATA_DI_NASCITA, format="%d/%m/%Y")) %>%
+    mutate(cf = gsub("([A-Z]*)([0-9]*)", "\\1 \\2 \\3", CODICE_FISCALE), .after = CODICE_FISCALE) %>%
+    separate(cf, into = c("cognome_nome", "anno", "mese", "giorno", NA)) %>%
+    mutate(anno = ifelse(anno > 24, gsub("^","19",anno), gsub("^","20",anno))) %>%
+    mutate(mese = as.character(month_decode[mese,])) %>%
+    mutate(giorno = ifelse(giorno > 40, as.numeric(giorno)-40, as.numeric(giorno))) %>%
+    mutate(giorno = ifelse(giorno<10, str_pad(giorno, 2, pad = "0"), giorno)) %>%
+    unite(date_cf, anno:giorno, sep="-") %>%
+    select(-cognome_nome) %>%
+    mutate(DATA_DI_NASCITA_c = DATA_DI_NASCITA, .after=DATA_DI_NASCITA) %>%
+    separate(DATA_DI_NASCITA, into=c("anno.x","mese.x","giorno.x"), sep="-") %>%
+    mutate(date_cf_c = date_cf, .after=date_cf) %>%
+    separate(date_cf, into=c("anno.y","mese.y","giorno.y")) %>%
+    mutate(anno.x.1 = substr(anno.x,1,2), .after = anno.x ) %>%
+    mutate(anno.x.2 = substr(anno.x,3,4), .after = anno.x.1 ) %>%
+    mutate(anno.y.1 = substr(anno.y,1,2), .after = anno.y ) %>%
+    mutate(anno.y.2 = substr(anno.y,3,4), .after = anno.y.1 ) %>%
+    mutate(anno.new = ifelse(anno.x.1=="00" & anno.x.2==anno.y.2, paste0(anno.y.1,anno.y.2), anno.x), .after=date_cf_c) %>%
+    mutate(DATA_DI_NASCITA = paste(anno.new,mese.x,giorno.x, sep="-"), .after=DATA_DI_NASCITA_c) %>%
+    select(-DATA_DI_NASCITA_c,-anno.new,-anno.x,-anno.x.1,-anno.x.2,-mese.x,-giorno.x,-anno.y,-anno.y.1,-anno.y.2,-mese.y,-giorno.y) %>%
+    rename(date_cf=date_cf_c)
+  metadata <<- metadata
+}
+
+
+read_plate(file.path(run_folder,"piastre"))
+```
+
+
+check on birth date
+```{r}
+to_check <- mutate(metadata, DATA_DI_NASCITA = as.character(DATA_DI_NASCITA)) %>%
+  mutate(DATA_DI_NASCITA = replace_na(DATA_DI_NASCITA,"NA")) %>%
+  filter(DATA_DI_NASCITA != date_cf)
+```
+
+flag samples whose date of birth and date of birth obtained from CODICE FISCALE are different  
+!ATTENZIONE: data corsa  
+!ATTENZIONE: aggiunta data in alcuni codice campione  
+```{r}
+metadata <- metadata %>%
+  mutate(DATA_DI_NASCITA = as.character(DATA_DI_NASCITA)) %>%
+  mutate(DATA_DI_NASCITA = replace_na(DATA_DI_NASCITA,"NA")) %>%
+  mutate(to_check = ifelse(DATA_DI_NASCITA != date_cf, "*", ""), .after=date_cf) %>%
+  mutate(DATA_DI_NASCITA = ifelse(DATA_DI_NASCITA=="NA",NA,DATA_DI_NASCITA)) %>%
+  mutate(date_cf = ifelse(date_cf=="NA-NA-NA",NA,date_cf)) %>%
+  mutate(CORSA = "2024-03-07") %>% #anno-mese-giorno
+  mutate(CAMPIONE = ifelse(CAMPIONE %in% c("07063014","07063061",
+                                           "07063064","07063088","07063087",
+                                           "07063086","07063084"),
+                           gsub("$","-5-7-22",CAMPIONE), CAMPIONE))
+
+#write.table(metadata, file=file.path(run_folder,paste0("metadata_",run_name,".csv")), sep = ",", quote=FALSE, row.names=F, col.names=T)
+```
+
+Add age interval of the patient
+```{r}
+suppressPackageStartupMessages(library(lubridate))
+metadata <- metadata %>%
+  mutate(PATIENT_AGE = ifelse(to_check!="*", trunc((DATA_DI_NASCITA %--% DATA_PRELIEVO) / years(1)), ""), .after=to_check) %>%
+  mutate(AGE_INTERVAL = cut(as.numeric(PATIENT_AGE), 
+                            breaks = c(0,9,19,29,39,49,59,69,79,89,99), 
+                            labels = c("0-9","10-19","20-29","30-39","40-49","50-59","60-69","70-79","80-89",">90"),
+                            include.lowest = T), .after=PATIENT_AGE)
+```
+
+Change laboratory's name to standard
+```{r}
+# LABORATORIO to standard
+metadata <- metadata %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="SPALLANZANI", "IRCCS INMI Lazzaro Spallanzani", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="GEMELLI", "Fondazione Policlinico Universitario Gemelli IRCCS", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="SAN CAMILLO", "Azienda Ospedaliera San Camillo Forlanini", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="SANT'EUGENIO", "Ospedale S. Eugenio", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="IFO", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="GENZANO", "Ospedale E. De Santis di Genzano", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="SANTA MARIA GORETTI", "Ospedale S. Maria Goretti", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="LATINA", "Ospedale S. Maria Goretti", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="SM GORETTI", "Ospedale S. Maria Goretti", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="S.M. GORETTI LATINA", "Ospedale S. Maria Goretti", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="SAN FILIPPO NERI", "Presidio Ospedaliero San Filippo Neri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="SPAZIANI FROSINONE", "Ospedale Fabrizio Spaziani", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="FROSINONE", "Ospedale Fabrizio Spaziani", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="BELCOLLE VITERBO", "Ospedale Di Belcolle Viterbo", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="BEL COLLE VITERBO", "Ospedale Di Belcolle Viterbo", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="TOR VERGATA", "Policlinico Tor Vergata", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="UMBERTO I", "Policlinico Umberto I", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="UMBERTO PRIMO", "Policlinico Umberto I", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="TIVOLI", "Ospedale San Giovanni Evangelista di Tivoli", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="RIETI", "Ospedale San Camillo de Lellis", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="DE LELLIS RIETI", "Ospedale San Camillo de Lellis", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="SAN CAMILLO DE LELLIS RIETI", "Ospedale San Camillo de Lellis", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="PERTINI", "Ospedale Sandro Pertini", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="BAMBIN GESU'", "Ospedale Pediatrico Bambino Gesù", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="BAMBINO GESU'", "Ospedale Pediatrico Bambino Gesù", LABORATORIO))
+
+############################################
+metadata <- metadata %>%
+  mutate(REPARTO_PROVENIENZA = LABORATORIO)
+
+metadata <- metadata %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="AMBULATORIO", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="Ambulatorio Ematologia", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="Ambulatorio emergenza COVID", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="Ambulatorio Onc Med B", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="Chirurgia Toracica", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="DIREZIONE SANITARIA", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="SORVEGLIANZA MEDICA", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="UROLOGIA", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="Ambulatorio Onc Med A", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="MEDICINA NUCLEARE", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="OMA-Attività per Sperimentazioni Cliniche", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="URO-Attività per Sperimentazioni Cliniche", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="ORTOPEDIA", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="II CHIRURGIA B IRE", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="Ambulatorio Trasfusionale", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="Chirurgia EpatoBilioPancreatica", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="ONCOLOGIA MEDICA A IRE", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="ONCOLOGIA MEDICA B IRE", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="OTORINO", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="SEGRETERIA", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="S.C. Dermatologia Infettiva", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="S.C. DERMAT. INFIAMMATORIA ED ALLERGOLOGICA ISG", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="OMB-Attività per Sperimentazioni Cliniche", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="NEUROCHIRURGIA", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="EMATOLOGIA", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="Day Hospital Ematologia", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO)) %>%
+  mutate(LABORATORIO = ifelse(LABORATORIO=="CHIRURGIA PLASTICA ISG (LANCISI)", "IRCCS Istituti Fisioterapici Ospitalieri", LABORATORIO))
+
+  
+metadata <- metadata %>%
+  mutate(ASL = ifelse(LABORATORIO=="ASL RM3", "ASL RM3", ASL)) %>%
+  mutate(ASL = ifelse(LABORATORIO=="Azienda Ospedaliera San Camillo Forlanini", "ASL RM3", ASL)) %>%
+  mutate(ASL = ifelse(LABORATORIO=="FIUMICINO LUNGA SOSTA", "", ASL)) %>%
+  mutate(ASL = ifelse(LABORATORIO=="IRCCS INMI Lazzaro Spallanzani", "ASL RM3", ASL)) %>%
+  mutate(ASL = ifelse(LABORATORIO=="IRCCS Istituti Fisioterapici Ospitalieri", "ASL RM2", ASL)) %>%
+  mutate(ASL = ifelse(LABORATORIO=="Fondazione Policlinico Universitario Gemelli IRCCS", "ASL RM1", ASL)) %>%
+  mutate(ASL = ifelse(LABORATORIO=="Ospedale Pediatrico Bambino Gesù", "ASL RM1", ASL))
+  
+#######################################
+
+
+
+
+# ASL to standard
+metadata <- metadata %>%
+  mutate(ASL = ifelse(ASL=="ASL ROMA 1", "ASL RM1", ASL)) %>%
+  mutate(ASL = ifelse(ASL=="ASL ROMA5", "ASL RM5", ASL)) %>%
+  mutate(ASL = ifelse(ASL=="ASL ROMA6", "ASL RM6", ASL)) %>%
+  mutate(ASL = ifelse(ASL=="LATINA", "ASL LATINA", ASL)) %>%
+  mutate(ASL = ifelse(LABORATORIO=="IRCCS Istituti Fisioterapici Ospitalieri", "ASL RM2", ASL))
+
+# MOTIVO_SEQUENZIAMENTO to standard
+metadata <- metadata %>%
+  mutate(REPARTO_PROVENIENZA = ifelse(LABORATORIO=="IRCCS Istituti Fisioterapici Ospitalieri", REPARTO_PROVENIENZA, NA)) %>%
+  mutate(REPARTO_PROVENIENZA = ifelse(REPARTO_PROVENIENZA=="IRCCS Istituti Fisioterapici Ospitalieri", NA, REPARTO_PROVENIENZA)) %>%
+  mutate(MOTIVO_SEQUENZIAMENTO = toupper(MOTIVO_SEQUENZIAMENTO)) %>%
+  mutate(MOTIVO_SEQUENZIAMENTO = ifelse(is.na(MOTIVO_SEQUENZIAMENTO),"AGGIUNTO",MOTIVO_SEQUENZIAMENTO)) %>%
+  mutate(MOTIVO_SEQUENZIAMENTO = ifelse(MOTIVO_SEQUENZIAMENTO=="AGGIUNTI","AGGIUNTO",MOTIVO_SEQUENZIAMENTO)) %>%
+  mutate(MOTIVO_SEQUENZIAMENTO = ifelse(MOTIVO_SEQUENZIAMENTO=="FATTO GIA' DALLO SPALLANZANI","AGGIUNTO",MOTIVO_SEQUENZIAMENTO)) %>%
+  mutate(MOTIVO_SEQUENZIAMENTO = ifelse(MOTIVO_SEQUENZIAMENTO=="GIA' FATTO DA NOI FL.4","AGGIUNTO",MOTIVO_SEQUENZIAMENTO))
+
+# REPARTO_PROVENIENZA to standard
+metadata <- metadata %>%
+  mutate(REPARTO_PROVENIENZA = ifelse(REPARTO_PROVENIENZA=="Ambulatorio emergenza COVID", "Ambulatorio Emergenza COVID", REPARTO_PROVENIENZA))
+  # mutate(REPARTO_PROVENIENZA = ifelse(REPARTO_PROVENIENZA=="ASL RM3", NA, REPARTO_PROVENIENZA))
+
+metadata <- metadata %>%
+  mutate(TAMPONE = ifelse(TAMPONE=="RAPIDI DILUITI", "RAPIDO DILUITO", TAMPONE)) %>%
+  mutate(TAMPONE = ifelse(is.na(TAMPONE), "MOLECOLARE", TAMPONE))
+
+#metadata <- metadata %>%
+  #mutate(DATA_ACCETTAZIONE="2023-10-02")
+
+write.table(metadata, file=file.path(run_folder,paste0("metadata_",run_name,".csv")), sep = ",", quote=FALSE, row.names=F, col.names=T)
+```
+
+
+
+Analysis
+!ATTENZIONE: la DATA_PRELIEVO estratta dalle piastre è corretta?
+```{r}
+#import metadata 
+plate <- read_csv(file.path(run_folder,paste0("metadata_",run_name,".csv")), col_types = "ccccccccccncccccccc") %>%
+  select(CAMPIONE,DATA_PRELIEVO,DATA_ACCETTAZIONE,COGNOME,NOME,SESSO,PATIENT_AGE,AGE_INTERVAL,ASL,LABORATORIO,REPARTO_PROVENIENZA,MOTIVO_SEQUENZIAMENTO,TAMPONE,VOLUME)
+
+samplesheet_path <- list.files(pattern = "SampleSheet", path = run_folder, ignore.case=T, recursive=T, full.names=T)
+run <- read.csv(samplesheet_path, skip=13)
+
+#sample to plate association
+sample_plate <- select(run, Sample_ID) %>%
+  rename(Sample = Sample_ID) %>%
+  mutate(PIASTRA =  rep(gsub("NTC-","",.[grepl("NTC", Sample),]), each = 96))
+
+#lineage assignment from BaseSpace COVID LINEAGE
+# column Median.Coverage is no more available in new COVID LINEAGE version
+covid_lineage <- read.csv(file.path(run_folder,paste0("covid_lineage_",run_name,".csv"))) %>%
+  select(Taxon, Lineage) %>%
+  rename(Sample=Taxon, Lineage_Basespace=Lineage) %>%
+  mutate(Report_Median_Coverage = "")
+  #mutate(Report_Median_Coverage = gsub("[(coverage)(amplicons)]", "", Report_Median_Coverage)) %>%
+  #mutate(Report_Median_Coverage = as.numeric(Report_Median_Coverage))
+  #mutate(Sample = ifelse(!grepl("^0",Sample), ifelse(grepl("^\\d",Sample), gsub("^", "0", Sample), Sample), Sample))
+
+
+#lineage assignment from running last version-updated Pangolin on fasta generated by BaseSpace COVID LINEAGE
+pangolin <- read.csv(file.path(run_folder,paste0("run_",run_name,"_lineage_report.csv"))) %>%
+  select(taxon, lineage, scorpio_support) %>%
+  rename(Sample=taxon, Lineage_Last_Version=lineage, scorpio_support_a=scorpio_support)
+
+#lineage assignment from running last version-updated Pangolin on fasta generated by BaseSpace DRAGEN RNA PATHOGEN
+pangolin_rna_pathogen <- read.csv(file.path(run_folder,paste0("run_",run_name,"_lineage_report_rna_pathogen.csv"))) %>%
+  select(taxon, lineage, scorpio_support) %>%
+  rename(Sample=taxon, Lineage_RNA_Pathogen=lineage, scorpio_support_b=scorpio_support) %>%
+  mutate(Sample = gsub("\\|MN908947.3","",Sample))
+
+join_lineage <- Reduce(function(x, y) merge(x, y, by="Sample", all=TRUE), list(covid_lineage,pangolin,pangolin_rna_pathogen)) %>%
+  relocate(Lineage_Last_Version,Lineage_RNA_Pathogen, .after=Lineage_Basespace) %>%
+  relocate(scorpio_support_a,scorpio_support_b, .after=Lineage_RNA_Pathogen) %>%
+  mutate(convergence = ifelse(Lineage_Basespace!=Lineage_Last_Version | Lineage_Basespace!=Lineage_RNA_Pathogen | Lineage_Last_Version!=Lineage_RNA_Pathogen, "*", ""))
+
+covid_lineage <- join_lineage %>%
+  select(-convergence)
+
+
+dragen_rna <- read_csv(file.path(run_folder,paste0("dragen_rna_",run_name,".csv")), col_types = cols()) %>%
+  mutate(Perc = `SARS-CoV-2`) %>%
+  separate(Perc, c("X","Perc"), " ") %>%
+  mutate(Perc = gsub("[()%]", "", Perc)) %>%
+  mutate(Perc = as.numeric(Perc)) %>%
+  arrange(-Perc) %>%
+  rename("Perc_over_5x"=Perc) %>%
+  select(Sample,Perc_over_5x)
+
+coverage_stats <- read_tsv(file.path(run_folder,"coverage.tsv"), col_types = cols())
+
+coverage_vocs <- read_tsv(file.path(run_folder,paste0("all_samples_",run_name,"_QC_vocs.tsv")), col_types = cols())
+```
+
+
+<!--
+If only lineage from VIRALRECON assignment is available
+```{r, warning=F}
+# lineage assignment from VIRALRECON
+covid_lineage <- read.csv(file.path(run_folder,paste0(run_name,"_lineage_report_viralrecon.csv"))) %>%
+  select(taxon, lineage, scorpio_support) %>%
+  rename(Sample=taxon, LINEAGE=lineage, SCORPIO_SUPPORT=scorpio_support) %>%
+  separate(Sample, into=c(NA,"Sample",NA), sep="_") %>%
+  mutate(Sample = ifelse(Sample=="NTC", "NTC-p1-04-08-2022", Sample)) %>%
+  mutate(Sample = ifelse(Sample=="PositiveControl", "PositiveControl-p1-04-08-2022", Sample))
+```
+-->
+
+
+```{r}
+join <- Reduce(function(x, y) merge(x, y, by.x="CAMPIONE", by.y="Sample", all=TRUE), list(plate,sample_plate,dragen_rna,coverage_stats,coverage_vocs,covid_lineage)) %>%
+# join <- Reduce(function(x, y) merge(x, y, by.x="CAMPIONE", by.y="Sample", all=TRUE), list(plate,sample_plate,covid_lineage)) 
+  # DATA_PRELIEVO extracted from ID DNLAB
+  # mutate("DATA_PRELIEVO" = CAMPIONE, .after=CAMPIONE) %>%
+  # mutate(DATA_PRELIEVO = ifelse(!(grepl("^U",DATA_PRELIEVO)), substr(DATA_PRELIEVO,1,4), NA)) %>%
+  # mutate(DATA_PRELIEVO = ifelse(!is.na(DATA_PRELIEVO), gsub("$","2022",DATA_PRELIEVO), NA)) %>%
+  # mutate(DATA_PRELIEVO = ifelse(!is.na(DATA_PRELIEVO), format(as.Date(DATA_PRELIEVO, format="%m%d%Y")), NA)) %>%
+  # mutate(DATA_PRELIEVO = ifelse(grepl("^U",CAMPIONE), NA, DATA_PRELIEVO)) %>%
+  mutate(RBD_min_hotspot = apply(.[,c("K417N,K417T","L452R","S477N","T478K","E484K,E484Q","N501Y")],1,function(a) (min(a)))) %>%
+  relocate(Lineage_Basespace,Lineage_Last_Version,Lineage_RNA_Pathogen,scorpio_support_a,scorpio_support_b,RBD_min_hotspot,Report_Median_Coverage, .after=Perc_over_5x)
+join <- join[order(match(join$CAMPIONE, run$Sample_ID)),]
+rownames(join) <- NULL
+write.table(join, file.path(run_folder,paste0("all_samples_all_metrics_",run_name,".tsv")), sep="\t", quote=FALSE, row.names=F, col.names=T)
+
+sample_date = data.frame(sample=join$CAMPIONE,date=join$DATA_PRELIEVO)
+write.table(sample_date, file.path(run_folder,"sample_date.tsv"), sep="\t", quote=FALSE, row.names=F, col.names=T)
+```
+
+
+<!--
+keep all lineage versions
+```{r, results = 'asis', echo = F}
+all_lineage_versions <- filter(join, !(grepl("^U",CAMPIONE))) %>%
+  replace_na(list(Lineage_Basespace="NA", Lineage_Last_Version="NA", Lineage_RNA_Pathogen="NA")) %>%
+  mutate(Lineage_Basespace = ifelse(Lineage_Basespace=="Unassigned","NA",Lineage_Basespace)) %>%
+  mutate(Lineage_Last_Version = ifelse(Lineage_Last_Version=="Unassigned","NA",Lineage_Last_Version)) %>%
+  mutate(Lineage_RNA_Pathogen = ifelse(Lineage_RNA_Pathogen=="Unassigned","NA",Lineage_RNA_Pathogen)) %>%
+  mutate(Convergence_Lineage_Across_Pipelines = ifelse(Lineage_Basespace!=Lineage_Last_Version | Lineage_Basespace!=Lineage_RNA_Pathogen | Lineage_Last_Version!=Lineage_RNA_Pathogen, "*", ""), .after=Lineage_RNA_Pathogen) %>%
+  mutate(across(c(Lineage_Basespace,Lineage_Last_Version,Lineage_RNA_Pathogen), na_if, "NA")) %>%
+  rename(PERC_OVER_5X=Perc_over_5x) %>%
+  arrange(-PERC_OVER_5X, Lineage_Last_Version)
+
+
+# add viralrecon lineage
+viralrecon <- read.csv(file.path(run_folder,paste0(run_name,"_lineage_report_viralrecon.csv"))) %>%
+  select(taxon, lineage, scorpio_support) %>%
+  rename(CAMPIONE=taxon, Lineage_Viralrecon=lineage, scorpio_support_viralrecon=scorpio_support) %>%
+  separate(CAMPIONE, into=c("CAMPIONE",NA), sep="_threshold") %>%
+  mutate(CAMPIONE = gsub(".consensus","",CAMPIONE)) %>%
+  mutate(CAMPIONE = gsub("Consensus_","",CAMPIONE)) %>%
+  mutate(CAMPIONE = ifelse(grepl("NTC|PositiveControl",CAMPIONE), gsub("_","-",CAMPIONE), CAMPIONE)) 
+
+all_lineage_versions_b <- merge(all_lineage_versions,viralrecon, by="CAMPIONE", all = T) %>%
+  relocate(Lineage_Viralrecon, .after=Convergence_Lineage_Across_Pipelines) %>%
+  relocate(scorpio_support_viralrecon, .after=scorpio_support_b)
+
+
+write.table(all_lineage_versions_b, file.path(run_folder,paste0("all_samples_join_all_lineage_versions_",run_name,".tsv")), sep="\t", quote=FALSE, row.names=F, col.names=T)
+write.xlsx2(all_lineage_versions_b, file.path(run_folder,paste0("all_samples_join_all_lineage_versions_",run_name,".xlsx")), row.names=F)
+```
+-->
+
+select lineage assigned on fasta generated by pipeline COVID LINEAGE, pangolin last version run on local machine  
+```{r, results = 'asis', echo = F}
+tab_dnlab_seresmi <- filter(join, !(grepl("^U",CAMPIONE))) %>%
+  mutate(LINEAGE = Lineage_Last_Version, .after=Perc_over_5x) %>%
+  select(-Lineage_Basespace, -Lineage_Last_Version, -Lineage_RNA_Pathogen, -scorpio_support_b) %>%
+  rename(SCORPIO_SUPPORT=scorpio_support_a,PERC_OVER_5X=Perc_over_5x) %>%
+  arrange(-PERC_OVER_5X, LINEAGE)
+
+
+write.table(tab_dnlab_seresmi, file.path(run_folder,paste0("all_samples_join_",run_name,".tsv")), sep="\t", quote=FALSE, row.names=F, col.names=T)
+write.xlsx2(tab_dnlab_seresmi, file.path(run_folder,paste0("all_samples_join_",run_name,".xlsx")), row.names=F)
+```
+
+
+
+<!--
+Differentiate between campioni SURVEY and campioni AGGIUNTO
+```{r}
+a <- tab_dnlab_seresmi %>%
+  filter(MOTIVO_SEQUENZIAMENTO=="SURVEY")
+  #filter(TAMPONE=="MOLECOLARE")
+#write.xlsx2(a, file.path(run_folder,paste0("survey_molecolare_",run_name,".xlsx")), row.names=F)
+
+b <- tab_dnlab_seresmi %>%
+  filter(MOTIVO_SEQUENZIAMENTO=="AGGIUNTO")
+#write.xlsx2(b, file.path(run_folder,paste0("campioni_aggiunti_",run_name,".xlsx")), row.names=F)
+```
+-->
+
+<!--
+Differentiate between campioni ODIERNI and campioni ROBOT-CHECK
+```{r}
+#differentiate between campioni ODIERNI and campioni ROBOT-CHECK
+a <- tab_dnlab_seresmi %>%
+  filter(grepl("-2$|-p1-10-04-2022",CAMPIONE))
+
+b <- tab_dnlab_seresmi %>%
+  filter(!grepl("-2$|-p1-10-04-2022",CAMPIONE))
+
+write.table(b, file.path(run_folder,paste0("all_samples_join_",run_name,".tsv")), sep="\t", quote=FALSE, row.names=F, col.names=T)
+write.xlsx2(b, file.path(run_folder,paste0("all_samples_join_",run_name,".xlsx")), row.names=F)
+
+
+results_old <- read_tsv("/Users/alicemassacci/Desktop/covid-seq/run_090922/all_samples_join_090922.tsv", col_types = "cccccc") %>%
+  select(CAMPIONE,PERC_OVER_5X,LINEAGE,Spike_median_coverage) %>%
+  mutate(CAMPIONE=gsub("$", "-2", CAMPIONE)) %>%
+  filter(CAMPIONE %in% sample_plate$Sample) %>%
+  rename("PERC_OVER_5X_0909"=PERC_OVER_5X,"LINEAGE_0909"=LINEAGE,"Spike_median_coverage_0909"=Spike_median_coverage)
+c <- merge(a,results_old, by="CAMPIONE") %>%
+  select(1,2,3,4,5,13,14,40,41,18,42) %>%
+  rename("PERC_OVER_5X_0710"=PERC_OVER_5X,"LINEAGE_0710"=LINEAGE,"Spike_median_coverage_0710"=Spike_median_coverage) %>%
+  mutate(convergence = ifelse(LINEAGE_0710 != LINEAGE_0909, "*", ""), .after=LINEAGE_0909)
+
+write.table(c, file.path(run_folder,paste0("robot_check_",run_name,".tsv")), sep="\t", quote=FALSE, row.names=F, col.names=T)
+write.xlsx2(c, file.path(run_folder,paste0("robot_check_",run_name,".xlsx")), row.names=F)
+```
+-->
+
+
+```{r}
+IFO_recovery_variants <- read_tsv(file.path(run_folder,"LAZ-IFO-2310023033-recovery_variants_majority_report.tab"), col_types = cols())
+
+INMI_recovery_variants <- read_tsv(file.path(run_folder,"LAZ-INMI-5792-recovery_variants_majority_report.tab"), col_types = cols())
+
+shared <- merge(IFO_recovery_variants,INMI_recovery_variants, by = c("Amino Acid Effect","Position","Reference","Alternative","Gene","Codon change","Mutation type"))
+
+shared <- inner_join(IFO_recovery_variants,INMI_recovery_variants)
+
+full_join_list <- full_join(IFO_recovery_variants,INMI_recovery_variants)
+full_join_list <- as.data.frame(full_join_list)
+write.xlsx2(full_join_list, file.path(run_folder,paste0("all_mutations.xlsx")), row.names=F)
+
+not_shared_ifo <- anti_join(IFO_recovery_variants,INMI_recovery_variants) %>%
+  mutate("only_present_in" = " LAZ-IFO-2310023033")
+
+not_shared_inmi <- anti_join(INMI_recovery_variants,IFO_recovery_variants) %>%
+  mutate("only_present_in" = " LAZ-INMI-5792")
+
+not_shared <- rbind(not_shared_ifo,not_shared_inmi)
+not_shared <- as.data.frame(not_shared)
+write.xlsx2(not_shared, file.path(run_folder,paste0("not_shared_mutations.xlsx")), row.names=F)
+
+colnames(IFO_recovery_variants)
+
+
+```
+
+
+
+
+
+
+
+
+Per compilazione del file riassuntivo seresmi (CAMPIONI SURVEY only)
+```{r}
+da_sottomettere <- read_tsv(file.path(run_folder,paste0("da_sottomettere_",run_name,".tsv")), col_types = cols(), col_names = "CAMPIONE")
+
+lineage_assumed <- read_tsv(file.path(run_folder,paste0("all_samples_join_",run_name,".tsv")), col_types = cols()) %>%
+  select(CAMPIONE, LINEAGE, MOTIVO_SEQUENZIAMENTO, TAMPONE) %>%
+  rename(Sample = CAMPIONE)
+
+# Per compilazione del file riassuntivo seresmi (CAMPIONI SURVEY only)
+count_by_lineage <- lineage_assumed %>%
+  filter(!grepl("None",LINEAGE)) %>%
+  filter(MOTIVO_SEQUENZIAMENTO=="MIRATA") %>%
+  #filter(MOTIVO_SEQUENZIAMENTO=="SURVEY") %>%
+  filter(Sample %in% da_sottomettere$CAMPIONE) %>%
+  #filter(TAMPONE=="MOLECOLARE") %>%
+  #filter(TAMPONE=="RAPIDO") %>%
+  #filter(!Sample=="2210053131") %>%
+  dplyr::count(LINEAGE) %>%
+  rename(count=n) %>%
+  arrange(LINEAGE) 
+sum(count_by_lineage$count)
+write.table(count_by_lineage, file.path(run_folder, paste0("count_by_lineage_survey_molecolari_",run_name,".tsv")), sep = "\t", quote=FALSE, row.names=F, col.names=T)
+
+```
+
+
+Check on mutations
+```{r}
+mutations <- read_tsv(file.path(run_folder,"all_sequences_rna_pathogen/table/seq_date_mut.tsv"), col_types = cols()) %>%
+  mutate(name = ifelse(is.na(name), gsub("EPI_ISL_","",sequence), name)) %>%
+  select(-country,-sequence,-date_submission,-Mut_EXT) %>%
+  #filter(POS > 21563 & POS < 25384) %>%
+  rename(Sample=name) %>%
+  arrange(POS)
+
+join1 <- merge(lineage_assumed,mutations,by="Sample",all.x=T) %>%
+  rename(Sample_Lineage=LINEAGE)
+
+defining_variants_old <- read_tsv("/Users/alicemassacci/Desktop/covid-seq/defining_variants.tsv", col_types = cols()) %>%
+  mutate(Gene = "S", .before=Mutation)
+defining_variants_new <- read_tsv("/Users/alicemassacci/Desktop/covid-seq/defining_variants_update.tsv", col_types = cols())
+defining_variants_update <- rbind(defining_variants_old,defining_variants_new) %>%
+  aggregate(Lineage~Mutation, ., paste, collapse=",")
+
+join2 <- merge(join1,defining_variants_update,by="Mutation",all.x=T) %>%
+  relocate(Mutation, .after=ALT) %>%
+  rename(Mutation_Lineage=Lineage) %>%
+  arrange(Sample) 
+
+mutations_of_interest <- filter(join2, !is.na(Mutation_Lineage)) %>%
+  filter(MOTIVO_SEQUENZIAMENTO=="SURVEY") %>%
+  filter(Sample %in% da_sottomettere$CAMPIONE) %>%
+  filter(TAMPONE=="MOLECOLARE") %>%
+  #filter(TAMPONE=="RAPIDO") %>%
+  #filter(TAMPONE=="RAPIDO DILUITO") %>%
+  #filter(!Sample_Lineage=="BA.5.2.1" | Sample_Lineage=="BA.5.2.24") %>%
+  filter(POS > 21563 & POS < 25384) %>%
+  select(POS,Mutation) %>%
+  distinct(.) %>%
+  arrange(POS)
+
+print(paste(mutations_of_interest$Mutation,collapse=","))
+```
+
+<!--
+Check on differenze puntuali tra due lineage
+```{r}
+lineage_assumed <- c %>%
+  select(CAMPIONE, LINEAGE_0710) %>%
+  rename("LINEAGE"=LINEAGE_0710) %>%
+  rename(Sample = CAMPIONE) %>%
+  filter(Sample=="2209073171-2")
+join1 <- merge(lineage_assumed,mutations,by="Sample",all.x=T) %>%
+  rename(Sample_Lineage=LINEAGE)
+join2 <- merge(join1,defining_variants,by="Mutation",all.x=T) %>%
+  relocate(Mutation, .after=ALT) %>%
+  merge(.,defining_variants_update,by="Mutation",all.x=T) %>%
+  rename(Mutation_Lineage=Lineage.x) %>%
+  arrange(Sample)
+
+differences <- read_tsv("/Users/alicemassacci/Desktop/covid-seq/defining_variants_update.tsv", col_types = cols()) %>%
+  #filter(Lineage=="BA.5.1" | Lineage=="BE.1") %>%
+  filter(Lineage=="BA.5.2.1") %>%
+  aggregate(Lineage~Mutation, ., paste, collapse=",")
+
+```
+-->
+
+
+
+
+
+ICOGEN submission fastq version ---------------------------
+!ATTENZIONE: data arrivo campione
+!ATTENZIONE: se indagine rapida
+!ATTENZIONE: origine isolato
+```{r}
+da_sottomettere <- read_tsv(file.path(run_folder,paste0("da_sottomettere_",run_name,".tsv")), col_types = cols(), col_names = "CAMPIONE")
+
+tab_icogen <- drop_na(tab_dnlab_seresmi, LINEAGE) %>%
+  #filter(!(grepl(",low_dragen_lineage_coverage",Lineage))) %>%
+  #filter(!(grepl(",coverage_filter_failed",Lineage))) %>%
+  filter(!grepl("NTC|Pos|acq|^U",CAMPIONE)) %>%
+  filter(CAMPIONE %in% da_sottomettere$CAMPIONE) %>%
+  #mutate(data_arrivo_campione = ifelse(MOTIVO_SEQUENZIAMENTO=="SURVEY", "2023-01-11", "")) %>%
+  #mutate(data_arrivo_campione = "2023-01-11") %>%
+  mutate(data_arrivo_campione = DATA_ACCETTAZIONE) %>%
+  select(CAMPIONE,DATA_PRELIEVO,data_arrivo_campione,AGE_INTERVAL,ASL,LABORATORIO,REPARTO_PROVENIENZA,MOTIVO_SEQUENZIAMENTO,TAMPONE) %>%
+  rename(data_campione = DATA_PRELIEVO) %>%
+  rename(ospedale = LABORATORIO) %>%
+  rename(age_interval = AGE_INTERVAL) %>%
+  mutate(nome_campione = paste0("LAZ-IFO-",CAMPIONE), .before = data_campione) %>%
+  mutate(age_interval = ifelse(is.na(age_interval), "unknown", age_interval)) %>%
+  mutate(fastq1 = paste0(CAMPIONE,"_R1.fastq.gz")) %>%
+  mutate(fastq2 = paste0(CAMPIONE,"_R2.fastq.gz"))
+
+col <- c("organismo","regione","provincia","descrizione","codice_interno","origine_isolato","numero_vaccinazioni","data_ultima_vaccinazione","ospedalizzato","terapia_intensiva","reinfetto","immunodepresso","paese_estero_attenzionato","campione_casuale")
+data <- c("Coronavirus","Lazio","Sconosciuta","","-","Sconosciuta","-","","ND","ND","ND","ND","ND","ND")
+
+df <- data.frame(t(replicate(length(tab_icogen$nome_campione), data)))
+colnames(df) <- col
+
+join_icogen <- cbind(df,tab_icogen) %>%
+  # campo "Campione scelto in maniera casuale" se indagine rapida deve essere compilato
+  #mutate(campione_casuale = ifelse(MOTIVO_SEQUENZIAMENTO=="SURVEY","Si",campione_casuale)) %>%
+  mutate(campione_casuale = ifelse(MOTIVO_SEQUENZIAMENTO=="MIRATO","No",campione_casuale)) %>%
+  mutate(campione_casuale = ifelse(MOTIVO_SEQUENZIAMENTO=="MIRATA","No",campione_casuale)) %>%
+  # campo "origine_isolato" deve essere compilato se tampone nasofaringeo
+  mutate(origine_isolato = ifelse(TAMPONE=="MOLECOLARE","Tampone nasofaringeo",origine_isolato)) %>%
+  mutate(origine_isolato = ifelse(is.na(origine_isolato),"Sconosciuta",origine_isolato)) %>%
+  select("organismo","regione","provincia","ospedale","nome_campione","descrizione","data_campione","data_arrivo_campione","codice_interno","origine_isolato","age_interval","numero_vaccinazioni","data_ultima_vaccinazione","ospedalizzato","terapia_intensiva","reinfetto","immunodepresso","paese_estero_attenzionato","campione_casuale","fastq1","fastq2")
+
+
+write.table(join_icogen$nome_campione, file.path(run_folder,"icogen_keep.txt"), quote=FALSE, row.names=F, col.names=F)
+write.table(join_icogen, file.path(run_folder, paste0("icogen_submission_",run_name,".csv")), sep=",", quote=FALSE, row.names=F, col.names=F)
+```
+
+
+
+associate ICOGEN IDs -----------------------------------
+```{r}
+codici_icogen <- tab_icogen %>%
+  select(CAMPIONE, nome_campione) %>%
+  rename(ID=nome_campione) %>%
+  arrange(CAMPIONE)
+
+write.xlsx2(codici_icogen, file.path(run_folder,paste0("codici_icogen_",run_name,".xlsx")), row.names=F)
+```
+
+
+GISAID submission --------------------------------------
+```{r}
+safu <- c("Sabrina Strano","Francesca De Nicola","Ludovica Ciuffreda","Frauke Goeman")
+oncogenomica <- c("Sara Donzelli","Giulia Orlandi")
+bioinformatica <- c("Matteo Pallocca","Alice Massacci","Martina Betti")
+virologia <- c("Grazia Prignano","Elisabetta Trento","Arianna Mastrofrancesco",
+               "Giovanna D’agosto","Carla Mottini","Martina Pontone","di Domenico Enea Gino","Ilaria Cavallo","Francesca Sivori","Alessandra De Santis",
+               "Andrea Cazzani","Ilaria Celesti","Martina Diano","Antonio Federico","Fulvia Fraticelli","Lorenzo Furzi",
+               "Alessia Lauretti","Francesca Maione","Francisco Obregon","Silvia Paluzzi","Sara Petrolo","Valentina Ricca",
+               "Serena Salvo", "Sivori Francesca","Tufi Valentina","Perciballi Natascia","La Greca Ilenia","Cilli Laura")
+fix <- c("Fulvia Pimpinelli, Maurizio Fanciulli, Giovanni Blandino, Aldo Morrone, Gennaro Ciliberto")
+
+
+
+# always check on the columns
+#tab_gisaid <- filter(join, Perc_over_5x >= 99 & RBD_min_coverage >= 5 & apply(join[,20:34],1,function(a) all(a >= 15)) & rowSums(join[,20:34] >= 100) > 9) %>%
+#tab_gisaid <- filter(join, Perc_over_5x >= 99 & RBD_min_coverage >= 5) %>%
+tab_gisaid <- join %>%
+  filter(!grepl("NTC|Pos|^U",CAMPIONE)) %>%
+  filter(CAMPIONE %in% da_sottomettere$CAMPIONE) %>%
+  select(CAMPIONE,DATA_PRELIEVO,SESSO) %>%
+  separate(col="DATA_PRELIEVO", into=c("year","month","day"), sep='-', remove = F) %>%
+  rename(covv_collection_date = DATA_PRELIEVO, covv_gender = SESSO) %>%
+  mutate(covv_virus_name = paste0("hCoV-19/Italy/LAZ-IFO-",CAMPIONE,"/",year), year=NULL, month=NULL, day=NULL, .before = covv_collection_date) %>%
+  mutate(covv_gender = case_when(covv_gender == "M" ~ "Male", covv_gender == "F" ~ "Female", TRUE ~ "unknown")) %>%
+  mutate(covv_authors = rep_len(safu, length.out=length(CAMPIONE))) %>%
+  mutate(covv_authors = paste(covv_authors,rep_len(oncogenomica, length.out=length(CAMPIONE)),sep=", ")) %>%
+  mutate(covv_authors = paste(covv_authors,rep_len(bioinformatica, length.out=length(CAMPIONE)),sep=", ")) %>%
+  mutate(covv_authors = paste(covv_authors,rep_len(virologia, length.out=length(CAMPIONE)),sep=", ")) %>%
+  mutate(covv_authors = paste(covv_authors,rep_len(fix, length.out=length(CAMPIONE)),sep=", ")) %>%
+  mutate(covv_authors = paste0('"',covv_authors,'"')) %>%
+  select(-CAMPIONE)
+  
+ 
+col <- c("submitter","fn","covv_type","covv_passage","covv_location","covv_add_location",
+         "covv_host","covv_add_host_info","covv_sampling_strategy","covv_patient_age","covv_patient_status",
+         "covv_specimen","covv_outbreak","covv_last_vaccinated","covv_treatment",
+         "covv_seq_technology","covv_assembly_method","covv_coverage","covv_orig_lab",
+         "covv_orig_lab_addr","covv_provider_sample_id","covv_subm_lab","covv_subm_lab_addr",
+         "covv_subm_sample_id","covv_consortium")
+data <- c("massacci_alice","submission_gisaid.fasta","betacoronavirus","Original",
+          "Europe / Italy / Lazio / Rome","","Human","","","unknown","unknown","",
+          "","","","NovaSeq 6000","","",'"IRCCS San Gallicano Dermatological Institute"',
+          '"Via Elio Chianesi, 53, 00144 Rome RM"',"",'"IRCCS Regina Elena National Cancer Institute"',
+          '"Via Elio Chianesi, 53, 00144 Rome RM"',"","")
+
+#Nextseq 500
+#NovaSeq 6000
+
+df <- data.frame(t(replicate(length(tab_gisaid$covv_virus_name), data)))
+colnames(df) <- col
+
+join_gisaid <- cbind(tab_gisaid,df) %>%
+  relocate(submitter,fn) %>%
+  relocate(covv_type,covv_passage, .after=covv_virus_name) %>%
+  relocate(covv_gender, .after=covv_sampling_strategy) %>%
+  relocate(covv_consortium, .after=covv_subm_sample_id) %>%
+  relocate(covv_authors, .after=covv_consortium)
+write.table(join_gisaid$covv_virus_name, file.path(run_folder,"gisaid_keep.txt"), quote=FALSE, row.names=F, col.names=F)
+write.table(join_gisaid, file.path(run_folder,paste0("gisaid_submission_metadata_",run_name,".csv")), sep=",", quote=FALSE, row.names=F, col.names=T)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+CSV for covid-seq DB --------------------------------
+nuovo_formato_Agosto22
+```{r}
+#db_folder <- "/Users/alicemassacci/Desktop/covid-seq/covid-seq-DB/nuovo_formato_Agosto22"
+db_folder <- "/Users/alicemassacci/Desktop/covid-seq/covid-seq-DB/nuovo_formato_Novembre22"
+
+metadata <- read_csv(file.path(run_folder,paste0("metadata_",run_name,".csv")), col_types = "cccccccccccccccccc")
+
+analisi <- readxl::read_xlsx("/Users/alicemassacci/Desktop/covid-seq/run_161222/all_samples_join_161222.xlsx") %>%
+  select(CAMPIONE,DATA_PRELIEVO,PIASTRA,PERC_OVER_5X,LINEAGE,SCORPIO_SUPPORT) %>%
+  filter(!grepl("Pos|NTC",CAMPIONE)) %>%
+  inner_join(metadata) %>%
+  select(CAMPIONE,COGNOME,NOME,SESSO,DATA_DI_NASCITA,CODICE_FISCALE,date_cf,to_check,PATIENT_AGE,AGE_INTERVAL,CORSA,PIASTRA,DATA_PRELIEVO,ASL,LABORATORIO,REPARTO_PROVENIENZA,PERC_OVER_5X,LINEAGE,SCORPIO_SUPPORT,MOTIVO_SEQUENZIAMENTO,TAMPONE,VOLUME) %>%
+  mutate(LINEAGE = ifelse(is.na(LINEAGE) | LINEAGE=="None" | LINEAGE=="Unassigned", "COVERAGE INSUF", LINEAGE)) %>%
+  # assign COVERAGE INSUF to the samples indicated by Fulvia
+  mutate(LINEAGE = ifelse(!CAMPIONE %in% da_sottomettere$CAMPIONE, "COVERAGE INSUF", LINEAGE)) %>%
+  #mutate(LINEAGE = ifelse(CAMPIONE %in% c("08010227","08013020","08010232","08010171","08010172"), "COVERAGE INSUF", LINEAGE)) %>%
+  mutate(PANGOLIN_V = "4.1.3") %>%
+  mutate(SCORPIO_V = "0.3.17") %>%
+  arrange(CAMPIONE)
+
+write.table(analisi, file.path(db_folder,paste0("metadata_db_",run_name,".tsv")), sep="\t", quote=FALSE, row.names=F)
+
+analisi <- as.data.frame(analisi)
+
+xlsx::write.xlsx2(analisi, file.path(db_folder,paste0("metadata_db_",run_name,".xlsx")), row.names=F )
+```
+
+vecchio formato
+```{r}
+a <- analisi %>%
+  rename(STRUTTURA_RACCOLTA_CAMPIONE = LABORATORIO, PROVENIENZA=ASL)
+
+write.table(a, paste0("/Users/alicemassacci/Desktop/covid-seq/covid-seq-DB/vecchio_formato/metadata_db_",run_name,".tsv"), sep="\t", quote=FALSE, row.names=F)
+```
+
+
+
+```{r}
+seq_date_mut <- read_tsv(paste0("/Users/alicemassacci/Desktop/covid-seq/run_",run_name,"/all_sequences_rna_pathogen/table/seq_date_mut.tsv"), show_col_types = FALSE) %>%
+  select(-country,-sequence,-date_submission) %>%
+  filter(!grepl("-2$",name)) %>%
+  filter(!grepl("-p2",name)) %>%
+  unique(.)
+
+freq <- read_tsv(paste0("/Users/alicemassacci/Desktop/covid-seq/run_",run_name,"/all_sequences_rna_pathogen/table/freq_results.tsv"), show_col_types = FALSE) %>%
+  select(-Frequency) %>%
+  rename(POS=Position, REF=Reference,ALT=Alteration) 
+
+combined <- freq %>%
+  merge(.,seq_date_mut, by=c("POS", "Mut_EXT", "Mutation", "REF", "ALT"), all.y=T) %>%
+  #unique(.) %>%
+  drop_na("POS", "Mut_EXT", "Mutation", "REF", "ALT") %>%
+  rename("CAMPIONE"=name,"GENE"=Gene,"MUTATION"=Mutation,"GVSP"=Mut_EXT,"MUT_TYPE"=Mutation_type) %>%
+  select(CAMPIONE,GENE,POS,REF,ALT,GVSP,MUTATION,MUT_TYPE) %>%
+  filter(!grepl("Pos|NTC",CAMPIONE)) %>%
+  arrange(CAMPIONE,POS) %>%
+  mutate(CAMPIONE = as.character(CAMPIONE))
+
+write.table(combined, file = file.path(db_folder,paste0("mutations_db_",run_name,".tsv")), sep="\t", quote=FALSE, row.names=F)
+freq <- as.data.frame(freq)
+
+xlsx::write.xlsx2(combined, file.path(db_folder,paste0("mutations_db_",run_name,".xlsx")), row.names=F)
+
+```
+
+
+
+Update result's history
+```{r}
+db_folder <- "/Users/alicemassacci/Desktop/covid-seq/covid-seq-DB/nuovo_formato_Novembre22"
+
+old <- read_tsv(file.path(db_folder,"storico_040822_111122.tsv"), col_types = "ccccccccncccccccncnccccc")
+new <- read_tsv(file.path(db_folder,paste0("metadata_db_", run_name, ".tsv")), col_types = "ccccccccncccccccncnccccc")
+update <- rbind(old,new)
+
+write.table(update, file = file.path(db_folder,paste0("storico_040822_", run_name, ".tsv")), sep="\t", quote=FALSE, row.names=F)
+update <- as.data.frame(update)
+xlsx::write.xlsx2(update, file.path(db_folder,paste0("storico_040822_", run_name, ".xlsx")), row.names=F)
+```
+
+
+
+
+
+
+
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(xlsx)
+  library(plyr)
+})
+
+db_folder <- "/Users/alicemassacci/Desktop/covid-seq/covid-seq-DB/nuovo_formato_Agosto22"
+
+all_metadata_db_files <- list.files(path = db_folder, recursive = F, pattern = "metadata_.*.xlsx", full.names = T)
+
+import.list <- llply(all_metadata_db_files, readxl::read_xlsx)
+
+a <- do.call(rbind, import.list) %>%
+select(-PATIENT_AGE,-AGE_INTERVAL,-PANGOLIN_V,-SCORPIO_V) %>%
+dplyr::rename(PROVENIENZA=LABORATORIO, PROVENIENZA_f=REPARTO_PROVENIENZA) %>%
+select(-ASL) %>%
+dplyr::mutate(STRUTTURA_RACCOLTA_CAMPIONE = PROVENIENZA, .after=PROVENIENZA_f)
+
+
+db_folder <- "/Users/alicemassacci/Desktop/covid-seq/covid-seq-DB"
+
+all_metadata_db_files <- list.files(path = db_folder, recursive = F, pattern = "metadata_db_100622.xlsx|metadata_db_080722.xlsx", full.names = T)
+
+import.list <- llply(all_metadata_db_files, readxl::read_xlsx)
+
+b <- do.call(rbind, import.list) %>%
+dplyr::mutate(PROVENIENZA_f=PROVENIENZA, STRUTTURA_RACCOLTA_CAMPIONE = "", .after=PROVENIENZA) %>%
+select(-PANGOLIN_V,-SCORPIO_V)
+
+all <- rbind(a,b)%>%
+arrange(CORSA)
+
+old <- readxl::read_xlsx("/Users/alicemassacci/Desktop/covid-seq/covid-seq-DB/storico/storico_covid_seq_0522.xlsx")
+
+final <- rbind(old,all)
+
+order <- unique(final$CORSA)
+
+
+
+
+database_corse <- read_tsv("/Users/alicemassacci/Desktop/covid-seq/database_corse_ifo.tsv", col_types = cols())
+order <- unique(database_corse$Run)
+
+
+write.table(final, file="/Users/alicemassacci/Desktop/covid-seq/covid-seq-DB/storico/storico_covid_seq_1022.tsv", sep="\t", quote=FALSE, row.names=F)
+
+final <- as.data.frame(final)
+
+xlsx::write.xlsx2(final, "/Users/alicemassacci/Desktop/covid-seq/covid-seq-DB/storico/storico_covid_seq_1022.xlsx", row.names=F)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Check on mutations PROVA INTERLABORATORIO 
+```{r}
+lineage_assumed <- read_tsv(file.path(run_folder,paste0("all_samples_join_",run_name,".tsv")), show_col_types = FALSE) %>%
+  select(CAMPIONE, LINEAGE, MOTIVO_SEQUENZIAMENTO, TAMPONE) 
+
+seq_date_mut <- read_tsv(file.path(run_folder,"all_sequences_rna_pathogen/table/seq_date_mut.tsv"), show_col_types = FALSE) %>%
+  mutate(name = ifelse(is.na(name), gsub("EPI_ISL_","",sequence), name)) %>%
+  select(-country,-sequence,-date_submission) %>%
+  unique(.)
+
+freq <- read_tsv(file.path(run_folder,"/all_sequences_rna_pathogen/table/freq_results.tsv"), show_col_types = FALSE) %>%
+  select(-Frequency) %>%
+  rename(POS=Position, REF=Reference,ALT=Alteration) 
+
+mutations <- freq %>%
+  merge(.,seq_date_mut, by=c("POS", "Mut_EXT", "Mutation", "REF", "ALT"), all.y=T) %>%
+  drop_na("POS", "Mut_EXT", "Mutation", "REF", "ALT") %>%
+  rename("CAMPIONE"=name,"GENE"=Gene,"MUTATION"=Mutation,"GVSP"=Mut_EXT,"MUT_TYPE"=Mutation_type) %>%
+  select(CAMPIONE,GENE,POS,REF,ALT,MUTATION) %>%
+  filter(!grepl("Pos|NTC",CAMPIONE)) %>%
+  arrange(CAMPIONE,POS) %>%
+  mutate(CAMPIONE = as.character(CAMPIONE))
+
+join1 <- merge(lineage_assumed,mutations,by="CAMPIONE",all.x=T) %>%
+  rename(Sample_Lineage=LINEAGE)
+
+prova_interlaboratorio <- join1 %>%
+  filter(is.na(TAMPONE)) %>%
+  filter(!grepl("Pos|NTC",CAMPIONE)) %>%
+  select(-TAMPONE, -MOTIVO_SEQUENZIAMENTO) %>%
+  unique(.)
+
+c <- prova_interlaboratorio %>%
+  select(GENE,POS,MUTATION) %>%
+  unique(.) %>%
+  arrange(POS)
+
+suppressPackageStartupMessages({
+  library(reshape2)
+})
+mutations_binary <- dcast(prova_interlaboratorio, MUTATION ~ CAMPIONE , value.var = "CAMPIONE", fill = 0, fun.aggregate = length)
+colnames(mutations_binary) <- c("MUTATION","Aa","Ab","Ba","Bb","Ca","Cb","Da","Db")
+
+mutations_binary_b <- merge(c,mutations_binary, by="MUTATION") %>%
+  select(GENE,POS,MUTATION,Aa,Ab,Ba,Bb,Ca,Cb,Da,Db) %>%
+  arrange(POS)
+
+m <- mutations_binary_b %>%
+  select(-GENE,-POS) %>%
+  column_to_rownames("MUTATION")
+
+  
+odds <- seq(1, ncol(m), by = 2)
+mutations_binary_c <- do.call(cbind, Map(function(z, nm) setNames(cbind(z, Status = +(z[[1]] != z[[2]])), c(names(z), nm)),
+                   split.default(m, rep(odds, each = 2)), 
+                   paste0("mismatches_", c("Aa-Ab","Ba-Bb","Ca-Cb","Da-Db")), USE.NAMES = FALSE)) %>%
+  mutate(`mismatches_Aa-Ab` = ifelse(`mismatches_Aa-Ab`==0, "", "*")) %>%
+  mutate(`mismatches_Ba-Bb` = ifelse(`mismatches_Ba-Bb`==0, "", "*")) %>%
+  mutate(`mismatches_Ca-Cb` = ifelse(`mismatches_Ca-Cb`==0, "", "*")) %>%
+  mutate(`mismatches_Da-Db` = ifelse(`mismatches_Da-Db`==0, "", "*")) %>%
+  rownames_to_column("MUTATION")
+
+mutations_binary_d <- merge(c,mutations_binary_c, by="MUTATION") %>%
+  relocate(GENE,POS, .before = MUTATION) %>%
+  arrange(POS)
+
+write.table(mutations_binary_d, file.path(run_folder,"mutations_binary.tsv"), sep="\t", quote=FALSE, row.names=F)
+mutations_binary_d <- as.data.frame(mutations_binary_d)
+write.xlsx2(mutations_binary_d, file.path(run_folder,"mutations_binary.xlsx"), row.names=F)
+```
+
+
+
+
+PROVA INTERLABORATORIO 22.11.2023
+
+```{r}
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(xlsx)
+})
+```
+
+!ATTENZIONE: run_folder,run_name
+```{r, warning = FALSE}
+run_folder <- "/home/alice/ago2023/Desktop/covid-seq/run_241123"
+run_name <- gsub("run_","","run_241123")
+```
+
+```{r, warning = FALSE}
+samplesheet_path <- list.files(pattern = "SampleSheet", path = run_folder, ignore.case=T, recursive=T, full.names=T)
+run <- read.csv(samplesheet_path, skip=13)
+
+metadata <- run %>%
+  select(Sample_ID,Sample_Project) %>%
+  rename("CAMPIONE"=Sample_ID, "MOTIVO_SEQUENZIAMENTO"=Sample_Project) %>%
+  mutate(CORSA = "2023-11-24") %>% #anno-mese-giorno
+  mutate(DATA_ACCETTAZIONE = "2023-11-22") %>%
+  select(CAMPIONE,DATA_ACCETTAZIONE,MOTIVO_SEQUENZIAMENTO,CORSA)
+
+write.table(metadata, file=file.path(run_folder,paste0("metadata_",run_name,".csv")), sep = ",", quote=FALSE, row.names=F, col.names=T)
+```
+
+```{r}
+#lineage assignment from running last version-updated Pangolin on fasta generated by BaseSpace DRAGEN RNA PATHOGEN
+pangolin_rna_pathogen <- read.csv(file.path(run_folder,paste0("run_",run_name,"_lineage_report_rna_pathogen.csv"))) %>%
+  select(taxon, lineage, scorpio_support) %>%
+  rename(Sample=taxon, Lineage_RNA_Pathogen=lineage, scorpio_support_b=scorpio_support) %>%
+  mutate(Sample = gsub("\\|MN908947.3","",Sample))
+
+dragen_rna <- read_csv(file.path(run_folder,paste0("dragen_rna_",run_name,".csv")), col_types = cols()) %>%
+  mutate(Perc = `SARS-CoV-2`) %>%
+  separate(Perc, c("X","Perc"), " ") %>%
+  mutate(Perc = gsub("[()%]", "", Perc)) %>%
+  mutate(Perc = as.numeric(Perc)) %>%
+  arrange(-Perc) %>%
+  rename("Perc_over_5x"=Perc) %>%
+  select(Sample,Perc_over_5x)
+
+coverage_stats <- read_tsv(file.path(run_folder,"coverage.tsv"), col_types = cols())
+```
+
+```{r}
+join <- Reduce(function(x, y) merge(x, y, by.x="CAMPIONE", by.y="Sample", all=TRUE), list(metadata,dragen_rna,coverage_stats,pangolin_rna_pathogen)) %>%
+  relocate(Lineage_RNA_Pathogen,scorpio_support_b, .after=Perc_over_5x) %>%
+  rename(SCORPIO_SUPPORT=scorpio_support_b,PERC_OVER_5X=Perc_over_5x,LINEAGE=Lineage_RNA_Pathogen)
+join <- join[order(match(join$CAMPIONE, run$Sample_ID)),]
+rownames(join) <- NULL
+write.table(join, file.path(run_folder,paste0("prova_interlaboratorio_",run_name,".tsv")), sep="\t", quote=FALSE, row.names=F, col.names=T)
+write.xlsx2(join, file.path(run_folder,paste0("prova_interlaboratorio_",run_name,".xlsx")), row.names=F)
+```
+
+Check on mutations PROVA INTERLABORATORIO 
+```{r}
+lineage_assumed <- read_tsv(file.path(run_folder,paste0("prova_interlaboratorio_",run_name,".tsv")), col_types = cols()) %>%
+  select(CAMPIONE, LINEAGE) 
+
+seq_date_mut <- read_tsv(file.path(run_folder,"all_sequences_rna_pathogen/table/seq_date_mut.tsv"), col_types = cols()) %>%
+  mutate(name = ifelse(is.na(name), gsub("EPI_ISL_","",sequence), name)) %>%
+  select(-country,-sequence,-date_submission) %>%
+  unique(.)
+
+freq <- read_tsv(file.path(run_folder,"all_sequences_rna_pathogen/table/freq_results.tsv"), col_types = cols()) %>%
+  select(-Frequency) %>%
+  rename(POS=Position, REF=Reference,ALT=Alteration) 
+
+mutations <- freq %>%
+  merge(.,seq_date_mut, by=c("POS", "Mut_EXT", "Mutation", "REF", "ALT"), all.y=T) %>%
+  drop_na("POS", "Mut_EXT", "Mutation", "REF", "ALT") %>%
+  rename("CAMPIONE"=name,"GENE"=Gene,"MUTATION"=Mutation,"GVSP"=Mut_EXT,"MUT_TYPE"=Mutation_type) %>%
+  select(CAMPIONE,GENE,POS,REF,ALT,MUTATION) %>%
+  filter(!grepl("Pos|NTC",CAMPIONE)) %>%
+  arrange(CAMPIONE,POS) %>%
+  mutate(CAMPIONE = as.character(CAMPIONE))
+
+join1 <- merge(lineage_assumed,mutations,by="CAMPIONE",all.x=T) %>%
+  rename(Sample_Lineage=LINEAGE)
+
+prova_interlaboratorio <- join1 %>%
+  filter(!grepl("Pos|NTC",CAMPIONE)) 
+
+c <- prova_interlaboratorio %>%
+  select(GENE,POS,MUTATION) %>%
+  unique(.) %>%
+  arrange(POS)
+
+suppressPackageStartupMessages({
+  library(reshape2)
+})
+mutations_binary <- dcast(prova_interlaboratorio, MUTATION ~ CAMPIONE , value.var = "CAMPIONE", fill = 0, fun.aggregate = length)
+
+mutations_binary_b <- merge(c,mutations_binary, by="MUTATION") %>%
+  arrange(POS) %>%
+  drop_na(MUTATION) %>%
+  mutate(ID30A_202311="non processato", `ID30B_11-2023`="non processato")
+
+m <- mutations_binary_b %>%
+  select(-GENE,-POS) %>%
+  column_to_rownames("MUTATION")
+
+  
+odds <- seq(1, ncol(m), by = 2)
+mutations_binary_c <- do.call(cbind, Map(function(z, nm) setNames(cbind(z, Status = +(z[[1]] != z[[2]])), c(names(z), nm)),
+                   split.default(m, rep(odds, each = 2)), 
+                   paste0("mismatches_", c("Aa-Ab","Ba-Bb","Ca-Cb","Da-Db")), USE.NAMES = FALSE)) %>%
+  mutate(`mismatches_Aa-Ab` = ifelse(`mismatches_Aa-Ab`==0, "", "*")) %>%
+  mutate(`mismatches_Ba-Bb` = ifelse(`mismatches_Ba-Bb`==0, "", "*")) %>%
+  mutate(`mismatches_Ca-Cb` = ifelse(`mismatches_Ca-Cb`==0, "", "*")) %>%
+  mutate(`mismatches_Da-Db` = ifelse(`mismatches_Da-Db`==0, "", "*")) %>%
+  rownames_to_column("MUTATION")
+
+mutations_binary_d <- merge(c,mutations_binary_c, by="MUTATION") %>%
+  relocate(GENE,POS, .before = MUTATION) %>%
+  arrange(POS) %>%
+  mutate(`mismatches_Aa-Ab`=" ", `mismatches_Ba-Bb`=" ")
+
+write.table(mutations_binary_d, file.path(run_folder,"mutations_binary.tsv"), sep="\t", quote=FALSE, row.names=F)
+mutations_binary_d <- as.data.frame(mutations_binary_d)
+write.xlsx2(mutations_binary_d, file.path(run_folder,"mutations_binary.xlsx"), row.names=F)
+```
+
+
+Check on mutations PROVA INTERLABORATORIO 
+```{r}
+lineage_assumed <- read_tsv(file.path(run_folder,paste0("prova_interlaboratorio_",run_name,".tsv")), col_types = cols()) %>%
+  select(CAMPIONE, LINEAGE) 
+
+seq_date_mut <- read_tsv(file.path(run_folder,"viralrecon_consensus_merge/table/seq_date_mut.tsv"), col_types = cols()) %>%
+  mutate(name = ifelse(is.na(name), gsub("EPI_ISL_","",sequence), name)) %>%
+  select(-country,-sequence,-date_submission) %>%
+  unique(.)
+
+freq <- read_tsv(file.path(run_folder,"viralrecon_consensus_merge/table/freq_results.tsv"), col_types = cols()) %>%
+  select(-Frequency) %>%
+  rename(POS=Position, REF=Reference,ALT=Alteration) 
+
+mutations <- freq %>%
+  merge(.,seq_date_mut, by=c("POS", "Mut_EXT", "Mutation", "REF", "ALT"), all.y=T) %>%
+  drop_na("POS", "Mut_EXT", "Mutation", "REF", "ALT") %>%
+  rename("CAMPIONE"=name,"GENE"=Gene,"MUTATION"=Mutation,"GVSP"=Mut_EXT,"MUT_TYPE"=Mutation_type) %>%
+  select(CAMPIONE,GENE,POS,REF,ALT,MUTATION) %>%
+  filter(!grepl("Pos|NTC",CAMPIONE)) %>%
+  arrange(CAMPIONE,POS) %>%
+  mutate(CAMPIONE = as.character(CAMPIONE))
+
+join1 <- merge(lineage_assumed,mutations,by="CAMPIONE",all.x=T) %>%
+  rename(Sample_Lineage=LINEAGE)
+
+prova_interlaboratorio <- join1 %>%
+  filter(!grepl("Pos|NTC",CAMPIONE)) 
+
+c <- prova_interlaboratorio %>%
+  select(GENE,POS,MUTATION) %>%
+  unique(.) %>%
+  arrange(POS)
+
+suppressPackageStartupMessages({
+  library(reshape2)
+})
+mutations_binary <- dcast(prova_interlaboratorio, MUTATION ~ CAMPIONE , value.var = "CAMPIONE", fill = 0, fun.aggregate = length)
+
+mutations_binary_b <- merge(c,mutations_binary, by="MUTATION") %>%
+  arrange(POS) %>%
+  drop_na(MUTATION)
+
+m <- mutations_binary_b %>%
+  select(-GENE,-POS) %>%
+  column_to_rownames("MUTATION")
+
+  
+odds <- seq(1, ncol(m), by = 2)
+mutations_binary_c <- do.call(cbind, Map(function(z, nm) setNames(cbind(z, Status = +(z[[1]] != z[[2]])), c(names(z), nm)),
+                   split.default(m, rep(odds, each = 2)), 
+                   paste0("mismatches_", c("Aa-Ab","Ba-Bb","Ca-Cb","Da-Db")), USE.NAMES = FALSE)) %>%
+  mutate(`mismatches_Aa-Ab` = ifelse(`mismatches_Aa-Ab`==0, "", "*")) %>%
+  mutate(`mismatches_Ba-Bb` = ifelse(`mismatches_Ba-Bb`==0, "", "*")) %>%
+  mutate(`mismatches_Ca-Cb` = ifelse(`mismatches_Ca-Cb`==0, "", "*")) %>%
+  mutate(`mismatches_Da-Db` = ifelse(`mismatches_Da-Db`==0, "", "*")) %>%
+  rownames_to_column("MUTATION")
+
+mutations_binary_d <- merge(c,mutations_binary_c, by="MUTATION") %>%
+  relocate(GENE,POS, .before = MUTATION) %>%
+  arrange(POS) 
+
+write.table(mutations_binary_d, file.path(run_folder,"mutations_binary.tsv"), sep="\t", quote=FALSE, row.names=F)
+mutations_binary_d <- as.data.frame(mutations_binary_d)
+write.xlsx2(mutations_binary_d, file.path(run_folder,"mutations_binary.xlsx"), row.names=F)
+```
+
+
+```{r}
+mutations_covid_lineage <- read_csv(file.path(run_folder,"mutation_covid_lineage.csv"), col_types = cols()) 
+
+mutations_covid_lineage$substitutions[2]==mutations_covid_lineage$substitutions[4]
+
+mutations_covid_lineage$aaSubstitutions[1]==mutations_covid_lineage$aaSubstitutions[3]
+
+mutations_covid_lineage$aaDeletions[2]==mutations_covid_lineage$aaDeletions[4]
+```
+
